@@ -1,14 +1,3 @@
-#
-# Copyright (c) 2023 Image Processing Research Group of University Federico II of Naples ('GRIP-UNINA').
-# All rights reserved.
-# This work should only be used for nonprofit purposes.
-#
-# By downloading and/or using any of these files, you implicitly agree to all the
-# terms of the license, as specified in the document LICENSE.txt
-# (included in this package) and online at
-# http://www.grip.unina.it/download/LICENSE_OPEN.txt
-#
-
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import numpy as np
@@ -17,7 +6,7 @@ import glob
 import os
 import argparse
 import cv2
-import random
+import csv
 
 
 def imread(filename):
@@ -86,17 +75,32 @@ def get_spectrum_angular(power_spec, num = 16):
     return y, ang_freq/num
 
 
-def get_spectra(files_path, output_dir, output_code):
+# Define power law function for real vs fake classification
+def power_law(x, a, b):
+    return a * np.power(x, -b)
 
-    print("Starting generation of spectra")
-    print(files_path)
+
+def classify_image_by_radial_spectra(image_spectra, freq, ideal_params, threshold=0.01):
+    valid_indices = (freq >= 0.2) & (freq <= 0.5)
+    valid_freq = freq[valid_indices]
+    valid_image_spectra = image_spectra[valid_indices]
+    
+    # Ideal curve based on real image fit
+    ideal_spectra = power_law(valid_freq, *ideal_params)
+
+    # Calculate deviation
+    deviation = np.abs(valid_image_spectra - ideal_spectra)
+    mean_deviation = np.mean(deviation)
+
+    # Classify based on threshold
+    return 1 if mean_deviation <= threshold else 0
+
+
+def get_spectra(files_path, output_dir, output_code, ideal_params, threshold=0.01):
     filenames = glob.glob(files_path + "/*")
-    print(len(filenames))
     random.shuffle(filenames)
 
     siz = 256
-    filenames = filenames[:1000]
-    print("Starting to generate fingerprints")
     img_fft2 = [get_fft2(rescale_img(imread(_), siz)) for _ in tqdm(filenames)]
 
     freq = get_spectrum(img_fft2[0])[1]
@@ -110,8 +114,10 @@ def get_spectra(files_path, output_dir, output_code):
     spectra_var = np.var(spectra, 0)
     ang_spectra_var = np.var(ang_spectra, 0)
 
+    # Create output directory for the spectra
     figures_output_dir = os.path.join(output_dir, output_code)
     os.makedirs(figures_output_dir, exist_ok=True)
+
     dict_out = dict()
     dict_out['freq'] = freq
     dict_out['spectra_mean'] = spectra_mean
@@ -119,9 +125,21 @@ def get_spectra(files_path, output_dir, output_code):
     dict_out['ang_freq'] = ang_freq
     dict_out['ang_spectra_mean'] = ang_spectra_mean
     dict_out['ang_spectra_var'] = ang_spectra_var
-    np.savez(figures_output_dir+'/spectra.npz', **dict_out)
+    np.savez(figures_output_dir + '/spectra.npz', **dict_out)
 
-    # save figures
+    # CSV for classification results
+    csv_filename = os.path.join(figures_output_dir, 'classification_results.csv')
+    with open(csv_filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Image Name', 'Classification (1=Real, 0=Fake)'])
+
+        # Classify each image based on its radial spectra
+        for i, filename in enumerate(filenames):
+            image_spectra = spectra[i]
+            classification = classify_image_by_radial_spectra(image_spectra, freq, ideal_params, threshold)
+            writer.writerow([os.path.basename(filename), classification])
+
+    # Save figures
     fig = plt.figure(figsize=(6, 5))
     plt.plot(freq, spectra_mean, linewidth=2)
     plt.xlabel('$freq$', fontsize=10)
@@ -130,8 +148,7 @@ def get_spectra(files_path, output_dir, output_code):
     plt.xlim([0.2, 0.5])
     plt.ylim([0.0, 0.0012])
     plt.grid()
-    fig.savefig(figures_output_dir+'/spectra.png',
-                bbox_inches='tight', pad_inches=0.0)
+    fig.savefig(figures_output_dir + '/spectra.png', bbox_inches='tight', pad_inches=0.0)
 
     fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(6, 6))
     ang_spectra_mean = np.concatenate((ang_spectra_mean, ang_spectra_mean, ang_spectra_mean[...,:1]),-1)
@@ -139,17 +156,16 @@ def get_spectra(files_path, output_dir, output_code):
     ax.plot(ang_freq, ang_spectra_mean, linewidth=2)
     ax.set_yticks(ax.get_yticks(), list())
     ax.grid('on')
-    fig.savefig(figures_output_dir+'/ang_spectra.png',
-                bbox_inches='tight', pad_inches=0.0)
+    fig.savefig(figures_output_dir + '/ang_spectra.png', bbox_inches='tight', pad_inches=0.0)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--files_path", type=str,
-                        help="The path where the images are stored")
-    parser.add_argument("--out_dir", type=str,
-                        help="The path where to save the images")
-    parser.add_argument("--out_name", type=str,
-                        help="The name of the folder in which to save the images and the numpy arrays")
+    parser.add_argument("--files_path", type=str, help="The path where the images are stored")
+    parser.add_argument("--out_dir", type=str, help="The path where to save the images")
+    parser.add_argument("--out_name", type=str, help="The name of the folder in which to save the images and the numpy arrays")
     args = vars(parser.parse_args())
-    get_spectra(args['files_path'], args['out_dir'], args['out_name'])
+
+    # Example ideal parameters (these can be replaced with the real image fit)
+    ideal_params = [5.90e-5, 2.21]
+    get_spectra(args['files_path'], args['out_dir'], args['out_name'], ideal_params)
